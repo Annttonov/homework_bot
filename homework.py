@@ -9,7 +9,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from constants import (
-    ONE_MONTH_AGO,
+    ONE_DAY_AGO,
     RETRY_PERIOD,
     ENDPOINT,
     HOMEWORK_VERDICTS,
@@ -110,13 +110,21 @@ def check_response(response):
     try:
         if not isinstance(response['homeworks'], list):
             raise TypeError
+        result = response['homeworks'][0]
     except TypeError:
-        logger.error('Ошибка данных! Ожидался словарь.')
-        raise TypeError('Ошибка данных! Ожидался словарь.')
-    except KeyError:
-        logger.error('Ошибка ключа. Ключ "homeworks" не найден.')
-        raise KeyError('Ошибка ключа. Ключ "homeworks" не найден.')
-    return response['homeworks'][0]
+        message = 'Ошибка данных! Ожидался словарь.'
+        logger.error(message)
+        raise TypeError(message)
+    except KeyError as error:
+        message = f'Ошибка ключа. Ключ [{error}] не найден.'
+        logger.error(message)
+        raise KeyError(message)
+    except IndexError:
+        message = 'Нет заданий для проверки.'
+        logger.debug(message)
+        return message
+    else:
+        return result
 
 
 def parse_status(homework):
@@ -124,43 +132,43 @@ def parse_status(homework):
 
     Принимает объект домашки и возвращает сформированное сообщение
     """
-    status = homework['status']
     try:
+        status = homework['status']
         homework_name = homework['homework_name']
         verdict = HOMEWORK_VERDICTS[status]
-    except KeyError as e:
-        logger.error(f'Ошибка ключа. Ключ {e} не найден!')
-        raise KeyError(f'Ошибка ключа. Ключ {e} не найден!')
-
-    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
+    except KeyError as error:
+        message = f'Ошибка ключа. Ключ {error} не найден!'
+        logger.error(message)
+        raise KeyError(message)
+    message = f'Изменился статус проверки работы "{homework_name}". {verdict}'
+    logger.debug(message)
+    return message
 
 
 def main():
     """Основная логика работы бота."""
+    not_homeworks_message = 'Нет заданий для проверки.'
     message = None
-
     bot = TeleBot(token=TELEGRAM_TOKEN)
 
     while True:
         check_tokens()
         try:
-            response = get_api_answer(ONE_MONTH_AGO)
+            response = get_api_answer(ONE_DAY_AGO)
             data = check_response(response)
-            print(data)
-            if len(data) == 0:
-                logger.debug('Нет заданий для проверки.')
-                message = 'Нет заданий для проверки/'
-            new_message = parse_status(data)
-            if new_message != message:
-                message = new_message
-                send_message(bot, message)
+            if data == not_homeworks_message:
+                send_message(bot, not_homeworks_message)
             else:
-                send_message(bot, 'Статус домашки не изменен.')
+                result = parse_status(data)
+                if result != message:
+                    message = result
+                    send_message(bot, message)
+                else:
+                    send_message(bot, 'Статус домашки не изменен.')
         except Exception as error:
             print(error)
             message = f'Сбой в работе программы: {error}'
             send_message(bot, message)
-
         time.sleep(RETRY_PERIOD)
 
 
