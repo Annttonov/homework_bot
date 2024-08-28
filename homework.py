@@ -1,66 +1,167 @@
-...
+import os
+import time
+import requests
+from http import HTTPStatus
+
+from dotenv import load_dotenv
+from telebot import TeleBot
+import logging
+from logging.handlers import RotatingFileHandler
+
+from constants import (
+    ONE_MONTH_AGO,
+    RETRY_PERIOD,
+    ENDPOINT,
+    HOMEWORK_VERDICTS,
+)
+from exceptions import TokenError
 
 load_dotenv()
 
 
-PRACTICUM_TOKEN = ...
-TELEGRAM_TOKEN = ...
-TELEGRAM_CHAT_ID = ...
+logger = logging.getLogger('homework status TGbot')
+logger.setLevel(logging.DEBUG)
 
-RETRY_PERIOD = 600
-ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
+formatter = logging.Formatter(
+    fmt='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%d.%m.%Y time: %H:%M',
+)
+
+strHandler = logging.StreamHandler()
+rotHandler = RotatingFileHandler(
+    filename='.log',
+    mode='a',
+    maxBytes=10000,
+    encoding='utf-8',
+)
+
+strHandler.setFormatter(formatter)
+rotHandler.setFormatter(formatter)
+rotHandler.setLevel(logging.DEBUG)
+logger.addHandler(strHandler)
+logger.addHandler(rotHandler)
+
+
+PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
 
-HOMEWORK_VERDICTS = {
-    'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
-    'reviewing': 'Работа взята на проверку ревьюером.',
-    'rejected': 'Работа проверена: у ревьюера есть замечания.'
-}
-
-
 def check_tokens():
-    ...
+    """Проверят наличие переменных окржения.
+
+    В случае отсутствия хотя-бы одной из них - закрывает программу.
+    """
+    environment_variables = {
+        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+    }
+    not_token = []
+    for var in environment_variables:
+        if not environment_variables[var]:
+            not_token.append(var)
+    try:
+        if len(not_token) != 0:
+            raise TokenError(not_token)
+    except Exception as error:
+        logger.critical(f'Отсутствует обязательная переменная окружения: '
+                        f'{error} Программа принудительно остановлена.')
+        raise SystemExit
 
 
 def send_message(bot, message):
-    ...
+    """Отпраляет сообщение в телеграм-бот.
+
+    Принимает объект телеграм-бота, и сообщение для отпраки.
+    """
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        logger.error(f'Сообщение не отправлено!, возникла ошибка [{e}]')
+        return
+    logger.debug('Сообщение отправлено!')
 
 
-def get_api_answer(timestamp):
-    ...
+def get_api_answer(timestamp=0):
+    """Делает запрос к API практикума.
+
+    Принимает временную метку, возвращет JSON-ответа.
+    """
+    params = {'from_date': timestamp}
+    try:
+        resp = requests.get(ENDPOINT, params=params, headers=HEADERS)
+        if resp.status_code != HTTPStatus.OK:
+            raise requests.exceptions.HTTPError()
+    except requests.RequestException:
+        logger.error(f'Некорректный запрос к API [{resp.url}]')
+        raise requests.RequestException(f'Некорректный запрос к API '
+                                        f'[{resp.url}]')
+    return resp.json()
 
 
 def check_response(response):
-    ...
+    """Проверяет запрос на валидность данных.
+
+    Принимает объект запроса, возвращает объект домашки.
+    """
+    try:
+        if not isinstance(response['homeworks'], list):
+            raise TypeError
+    except TypeError:
+        logger.error('Ошибка данных! Ожидался словарь.')
+        raise TypeError('Ошибка данных! Ожидался словарь.')
+    except KeyError:
+        logger.error('Ошибка ключа. Ключ "homeworks" не найден.')
+        raise KeyError('Ошибка ключа. Ключ "homeworks" не найден.')
+    return response['homeworks'][0]
 
 
 def parse_status(homework):
-    ...
+    """проверят данные и формирует сообщение для отправки.
+
+    Принимает объект домашки и возвращает сформированное сообщение
+    """
+    status = homework['status']
+    try:
+        homework_name = homework['homework_name']
+        verdict = HOMEWORK_VERDICTS[status]
+    except KeyError as e:
+        logger.error(f'Ошибка ключа. Ключ {e} не найден!')
+        raise KeyError(f'Ошибка ключа. Ключ {e} не найден!')
 
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def main():
     """Основная логика работы бота."""
+    message = None
 
-    ...
-
-    # Создаем объект класса бота
-    bot = ...
-    timestamp = int(time.time())
-
-    ...
+    bot = TeleBot(token=TELEGRAM_TOKEN)
 
     while True:
+        check_tokens()
         try:
-
-            ...
-
+            response = get_api_answer(ONE_MONTH_AGO)
+            data = check_response(response)
+            print(data)
+            if len(data) == 0:
+                logger.debug('Нет заданий для проверки.')
+                message = 'Нет заданий для проверки/'
+            new_message = parse_status(data)
+            if new_message != message:
+                message = new_message
+                send_message(bot, message)
+            else:
+                send_message(bot, 'Статус домашки не изменен.')
         except Exception as error:
+            print(error)
             message = f'Сбой в работе программы: {error}'
-            ...
-        ...
+            send_message(bot, message)
+
+        time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
