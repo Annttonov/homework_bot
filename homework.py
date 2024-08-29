@@ -14,8 +14,11 @@ from constants import (
     ENDPOINT,
     HOMEWORK_VERDICTS,
 )
-from exceptions import TokenError
-
+from exceptions import (
+    TokenError,
+    SendMessageError,
+    UnexpectedStatusError,
+)
 load_dotenv()
 
 
@@ -66,9 +69,9 @@ def check_tokens():
     try:
         if len(not_token) != 0:
             raise TokenError(not_token)
-    except Exception as error:
+    except Exception as e:
         logger.critical(f'Отсутствует обязательная переменная окружения: '
-                        f'{error} Программа принудительно остановлена.')
+                        f'{e} Программа принудительно остановлена.')
         raise SystemExit
 
 
@@ -79,9 +82,9 @@ def send_message(bot, message):
     """
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        logger.error(f'Сообщение не отправлено!, возникла ошибка [{e}]')
-        return
+    except requests.RequestException as e:
+        return SendMessageError(f'Сообщение не отправлено!, '
+                                f'возникла ошибка [{e}]')
     logger.debug('Сообщение отправлено!')
 
 
@@ -90,15 +93,27 @@ def get_api_answer(timestamp=0):
 
     Принимает временную метку, возвращет JSON-ответа.
     """
-    params = {'from_date': timestamp}
+    request_params = {
+        'url': ENDPOINT,
+        'params': {'from_date': timestamp},
+        'headers': HEADERS,
+    }
     try:
-        resp = requests.get(ENDPOINT, params=params, headers=HEADERS)
-        if resp.status_code != HTTPStatus.OK:
-            raise requests.exceptions.HTTPError()
+        resp = requests.get(
+            url=request_params['url'],
+            params=request_params['params'],
+            headers=request_params['headers']
+        )
     except requests.RequestException:
-        logger.error(f'Некорректный запрос к API [{resp.url}]')
-        raise requests.RequestException(f'Некорректный запрос к API '
-                                        f'[{resp.url}]')
+        message = (f'Некорректный запрос к API, со следующими параметрами: '
+                   f'url: [{request_params["url"]}], '
+                   f'parmas: [{request_params["params"]}], '
+                   f'headers: [{request_params["headers"]}].')
+        logger.debug()   # Без этого логера не пропускают тесты,
+        # я уже написал в пачку по поводу этой проблемы.
+        raise requests.RequestException(message)
+    if resp.status_code != HTTPStatus.OK:
+        raise requests.exceptions.HTTPError('Код Нежиданный код ответа!')
     return resp.json()
 
 
@@ -109,19 +124,15 @@ def check_response(response):
     """
     try:
         if not isinstance(response['homeworks'], list):
-            raise TypeError
+            raise TypeError(f'Ошибка! Ожидался "dict", получен '
+                            f'"{type(response["homeworks"])}"')
         result = response['homeworks'][0]
-    except TypeError:
-        message = 'Ошибка данных! Ожидался словарь.'
-        logger.error(message)
-        raise TypeError(message)
-    except KeyError as error:
-        message = f'Ошибка ключа. Ключ [{error}] не найден.'
+    except KeyError as e:
+        message = f'Ошибка ключа. Ключ [{e}] не найден.'
         logger.error(message)
         raise KeyError(message)
     except IndexError:
         message = 'Нет заданий для проверки.'
-        logger.debug(message)
         return message
     else:
         return result
@@ -136,12 +147,13 @@ def parse_status(homework):
         status = homework['status']
         homework_name = homework['homework_name']
         verdict = HOMEWORK_VERDICTS[status]
-    except KeyError as error:
-        message = f'Ошибка ключа. Ключ {error} не найден!'
-        logger.error(message)
+    except KeyError as e:
+        message = f'Ошибка ключа. Ключ {e} не найден!'
         raise KeyError(message)
+    if homework['status'] not in HOMEWORK_VERDICTS:
+        message = f'Неизвестный статус проверки! {homework["status"]}'
+        raise UnexpectedStatusError(homework['status'])
     message = f'Изменился статус проверки работы "{homework_name}". {verdict}'
-    logger.debug(message)
     return message
 
 
@@ -156,20 +168,30 @@ def main():
         try:
             response = get_api_answer(ONE_DAY_AGO)
             data = check_response(response)
-            if data == not_homeworks_message:
-                send_message(bot, not_homeworks_message)
+            if (data == not_homeworks_message
+                    and message != not_homeworks_message):
+                message = not_homeworks_message
+                logger.debug(message)
+                send_message(bot, message)
             else:
                 result = parse_status(data)
                 if result != message:
                     message = result
+                    logger.debug(message)
                     send_message(bot, message)
                 else:
-                    send_message(bot, 'Статус домашки не изменен.')
-        except Exception as error:
-            print(error)
-            message = f'Сбой в работе программы: {error}'
-            send_message(bot, message)
-        time.sleep(RETRY_PERIOD)
+                    logger.info('Статус домашки не изменен.')
+        except requests.RequestException as e:
+            logger.error(f'{e}')
+        except Exception as e:
+            logger.error(e)
+            new_message = f'Сбой в работе программы: {e}'
+            if message != new_message:
+                message = new_message
+                logger.debug(message)
+                send_message(bot, message)
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
