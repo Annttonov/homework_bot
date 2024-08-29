@@ -3,10 +3,12 @@ class TokenError(NameError):
 
     pass
 
+
 class SendMessageError(Exception):
     """Исключение при ошибки стороннего API."""
 
     pass
+
 
 class UnexpectedStatusError(KeyError):
     """Исключение при неожиданном статусе проверки домашки."""

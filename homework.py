@@ -124,7 +124,7 @@ def check_response(response):
     """
     try:
         if not isinstance(response['homeworks'], list):
-            raise TypeError(f'Ошибка! Ожидался "dict", получен '
+            raise TypeError(f'Ошибка! Ожидался "list", получен '
                             f'"{type(response["homeworks"])}"')
         result = response['homeworks'][0]
     except KeyError as e:
